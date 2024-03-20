@@ -28,6 +28,8 @@ optional arguments:
   --fa FASTA            Optional path to reference genome fasta file. If not provided and not existing in data/, it will be downloaded.
                          (default: None)
   --genome {hg19,hg38}  Genome to be used: hg19 or hg38. (default: ['hg38'])
+  --personalized_genome VCF
+                        Optional VCF file to produce personalized reference genome including SNPs from the provided VCF file. 
   --scores {mse,corr,ssi,scc,ins,di,dec,tri,pca} [{mse,corr,ssi,scc,ins,di,dec,tri,pca} ...]
                         
                         Method(s) used to calculate disruption scores. Use abbreviations as follows:
@@ -116,6 +118,8 @@ optional arguments:
 # Parse through arguments
 
 import argparse
+import subprocess
+import glob
 
 class CustomFormatter(argparse.RawTextHelpFormatter, argparse.ArgumentDefaultsHelpFormatter):
     pass
@@ -158,6 +162,13 @@ parser.add_argument('--genome',
                     choices = ['hg19', 'hg38'],
                     default = ['hg38'],
                     required = False)
+
+parser.add_argument('--personalized_genome',
+                    dest='personalized_genome',
+                    help='''Path to personalized genome VCF file. If provided, a personalized genome will be created based on this VCF file and the reference genome. 
+                    If not provided, the normal reference genome will be used.''',
+                    type=str,
+                    required=False)
 
 parser.add_argument('--scores',
                     dest = 'scores', 
@@ -362,11 +373,29 @@ centromere_coords_path = f'{repo_path}/data/centromere_coords_{genome}'
    
 
 
-
 # Handle argument dependencies
 
 if fasta_path is None:
     fasta_path = f'{repo_path}/data/{genome}.fa'
+
+# Create personalized genome
+if args.personalized_genome:
+    # --personalized_genome was specified
+    if not args.personalized_genome.endswith(".vcf") and not args.personalized_genome.endswith(".vcf.gz"):
+        raise ValueError("Invalid file format provided for --personalized_genome. The personalized genome file must be in VCF or VCF.gz format.")
+    else:
+        print("--personalized_genome was specified. A personalized genome will be created from the provided VCF file")
+        input_vcf = [args.personalized_genome]
+        #input_fasta = ['/Users/jmarkow/Desktop/4DN/hackathon_2024/working/data/hg38.chr1.fa']
+        input_fasta = [fasta_path]
+        personalized_genome_script_path = os.path.join(os.path.dirname(__file__), "create_personalized_ref_genome.py")
+        subprocess.run(["python", personalized_genome_script_path] + input_vcf + input_fasta)
+        fasta_path = glob.glob(f'{repo_path}/data/personalized_genome/*.fa')[0]
+        print("Personalized genome was set as reference genome.")
+else:
+    # The argument --personalized_genome was not specified
+    print("reference genome will be used.")
+
 
 if seq_len != 1048576:
     get_Akita_scores = False
@@ -577,7 +606,7 @@ while True:
 
             for revcomp in revcomp_decision_i:
 
-                try:
+               # try:
 
                     if revcomp:
                         revcomp_annot = '_revcomp'
@@ -638,11 +667,11 @@ while True:
 
                     print(str(var_index) + ' (' + str(shift) + f' shift{revcomp_annot})')
 
-                except Exception as e: 
+                #except Exception as e: 
 
-                    print(str(var_index) + ' (' + str(shift) + f' shift{revcomp_annot})' + ': Error:', e)
+                #    print(str(var_index) + ' (' + str(shift) + f' shift{revcomp_annot})' + ': Error:', e)
 
-                    pass
+                #    pass
  
     
       
