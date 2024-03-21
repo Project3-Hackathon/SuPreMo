@@ -53,6 +53,9 @@ fasta_open = None
 chrom_lengths = None
 centromere_coords = None
 
+roi_coords_BED = None
+roi_weights = None
+
 
 
 # This file path and model path
@@ -88,6 +91,14 @@ target_length_cropped = target_length - 2 * cropping
 
 half_patch_size = round(seq_length/2)
 
+
+
+# Convert cell types to respective indices
+Akita_cell_type_dict = {'HFF':0,
+                        'H1hESC':1, 
+                        'GM12878':2, 
+                        'IMR90':3, 
+                        'HCT116':4}
 
 
 # # # # # # # # # # # # # # # # # # 
@@ -201,11 +212,142 @@ class scoring_map_methods:
 
 
 
+
+def get_roi_in_map(CHR, map_start_coord, rel_pos_map, SVTYPE, SVLEN):
+    
+    
+    '''
+    Get bins for regions of interest (roi) that fall in the predicted map.
+    
+    '''
+
+    map_region_BED = BedTool.from_dataframe(pd.DataFrame({'CHR' : [CHR],
+                                                          'start' : [map_start_coord],
+                                                          'end' : [map_start_coord + seq_length]}))
+
+    roi_in_map_BED = map_region_BED.intersect(roi_coords_BED, wa = True, wb = True)
+
+    if roi_in_map_BED == '':
+        roi_in_map = ''
+
+    else:
+        roi_in_map = (roi_in_map_BED
+                        .to_dataframe()
+                        .rename(columns = {'score': 'Start', 'strand':'End', 'thickStart':'roi_id'})
+                        [['Start', 'End', 'roi_id']])
+        
+        roi_in_map.Start = [math.ceil(x/bin_size) for x in (roi_in_map.Start - map_start_coord)]
+        roi_in_map.loc[roi_in_map.Start < 0,'Start'] = 0
+        roi_in_map.End = [math.ceil(x/bin_size) for x in (roi_in_map.End - map_start_coord)]
+        roi_in_map.loc[roi_in_map.End > target_length_cropped-1,'End'] = target_length_cropped-1
+        roi_in_map['width'] = [x-y+1 for x,y in zip(roi_in_map.End, roi_in_map.Start)]
+        
+        if SVTYPE == 'DUP' and abs(int(SVLEN)) > bin_size/2:
+            
+            roi_in_map.loc[(roi_in_map.Start >= rel_pos_map) & 
+                              (roi_in_map.End > rel_pos_map),
+                              ['Start', 'End']] = roi_in_map.loc[(roi_in_map.Start > rel_pos_map) & 
+                                                                  (roi_in_map.End > rel_pos_map),
+                                                                  ['Start', 'End']] + math.ceil(SVLEN/bin_size)
+
+
+            middle_genes = roi_in_map.loc[(roi_in_map.Start < rel_pos_map) & 
+                              (roi_in_map.End > rel_pos_map)].index
+
+
+            for middle_gene in middle_genes:
+
+                left = roi_in_map.loc[[middle_gene]]
+                left.End = rel_pos_map
+                right = roi_in_map.loc[[middle_gene]]
+                right.Start = rel_pos_map + math.ceil(SVLEN/bin_size)
+                right.End = right.End + math.ceil(SVLEN/bin_size)
+
+                roi_in_map = (roi_in_map
+                                .drop(middle_gene)
+                                .append(left)
+                                .append(right)
+                                .reset_index(drop=True))
+            
+            # Remove genes that left prediction window
+            roi_in_map = roi_in_map[~((roi_in_map.End > target_length_cropped) &
+                                        (roi_in_map.Start > target_length_cropped))]
+            
+            # Crop end of genes that left prediction window
+            roi_in_map.loc[(roi_in_map.End > target_length_cropped),'End'] = target_length_cropped
+
+            roi_in_map = roi_in_map[~np.isnan(roi_in_map.Start)]
+            roi_in_map.Start = [int(x) for x in roi_in_map.Start]
+            roi_in_map = roi_in_map[~np.isnan(roi_in_map.End)]
+            roi_in_map.End = [int(x) for x in roi_in_map.End]
+            
+            roi_in_map.reset_index(drop=True, inplace = True)
+            
+            
+    return roi_in_map
+
+
+
+
+
+def get_weighted_score(disruption_track, roi_in_map, roi_weight):
+
+
+    # Get the bins that correspond regions of interest (roi)
+    
+    roi_bins = []
+    for i in range(len(roi_in_map)):
+        
+        bins_i = list(range(roi_in_map.iloc[i].Start, roi_in_map.iloc[i].End))
+        roi_bins.append(bins_i)
+    
+    roi_bins = [item for group in roi_bins for item in group]
+    
+    
+    # Get scaling factor and background weight 
+    if len(roi_bins) == 0:
+        
+        background_weight = 1
+
+    elif roi_weight < 1 and roi_weight > 0:
+        
+        background_weight = 1
+        
+        n = len(roi_bins)
+        w = roi_weight
+        l = len(disruption_track)
+
+        scale = ((n*w)-(l*w))/((n*w)-n)
+
+    elif roi_weight == 1:
+        
+        background_weight = 0
+        scale = 1
+        
+    else:
+        
+        raise ValueError('roi_weight provided not compatible.')
+
+
+    # Get weight track
+    
+    weight_track = np.array([background_weight]*len(disruption_track))
+    for i in roi_bins:
+        weight_track[i] = scale
+    # Add nans to weight track
+    weight_track[np.isnan(disruption_track)] = 0
+
+
+    return np.average(disruption_track, weights=weight_track), roi_in_map.roi_id.values
+
+
+
+
 # # # # # # # # # # # # # # # # # # 
 # # # # # Running Akita # # # # # # 
 
 
-def vector_from_seq(seq):
+def vector_from_seq(seq, Akita_cell_types):
     
     '''
     Get predicted matrix from ~1 MB input sequence using Akita. 
@@ -223,7 +365,10 @@ def vector_from_seq(seq):
         sequences = layers.EnsembleShift(ensemble_shifts)(sequences)
     sequences
 
-    pred_targets = seqnn_model.predict(np.expand_dims(seq_1hot,0), verbose=0)[0,:,0]    
+    pred_targets = []
+    for cell_type in Akita_cell_types:
+        pred_targets_i = seqnn_model.predict(np.expand_dims(seq_1hot,0), verbose=0)[0,:,Akita_cell_type_dict[cell_type]]    
+        pred_targets.append(pred_targets_i)
 
     return pred_targets
 
@@ -459,7 +604,9 @@ def get_masked_BND_maps(matrices, rel_pos_map):
 # # # # # # get_scores # # # # # #
 
 
-def get_scores(POS, SVTYPE, SVLEN, sequences, scores, shift, revcomp, get_tracks: bool, get_maps: bool): 
+def get_scores(CHR, POS, SVTYPE, SVLEN, sequences, scores, shift, revcomp, 
+               get_tracks: bool, get_maps: bool, use_roi: bool, 
+               Akita_cell_types): 
     
     '''
     Get disruption scores, disruption tracks, and/or predicted maps from variants and the sequences generated from them.
@@ -480,54 +627,87 @@ def get_scores(POS, SVTYPE, SVLEN, sequences, scores, shift, revcomp, get_tracks
     # Make predictions
     
     sequences = [x for x in sequences if type(x) == str]
-    matrices = [map_from_vector(vector) for vector in [vector_from_seq(seq) for seq in sequences]]
-    
-    if revcomp:
-        matrices = [np.flipud(np.fliplr(x)) for x in matrices]
-    
-    
-    
-    # Mask matrices
-    
-    if SVTYPE != 'BND' and abs(int(SVLEN)) > bin_size/2:
+    vectors = [vector_from_seq(seq, Akita_cell_types) for seq in sequences]
 
-        var_rel_pos2 = var_rel_pos.copy()
-        matrices = mask_matrices(matrices[0], matrices[1], SVTYPE, abs(int(SVLEN)), var_rel_pos2)
-
-        # If masking, the relative postion on the map depends on whether it's a duplication or deletion
-        # If duplication, the relative position of variant in the ALT sequence should be used
-        if SVTYPE == 'DUP':
-            rel_pos_map = get_bin(var_rel_pos[1])
-
-    
-    if SVTYPE == "BND":  
-
-        matrices = get_masked_BND_maps(matrices, rel_pos_map)
-
-
-        
-    # Save maps, disruption scores, and tracks
-    
     scores_results = {}
     
-    if get_maps:
-        map_start_coord = POS - var_rel_pos[0] + 32*bin_size
+    for i in range(len(Akita_cell_types)):
         
-        triu_tup = np.triu_indices(target_length_cropped, hic_diags)
-        scores_results['maps'] = [matrices[0][triu_tup], 
-                                  matrices[1][triu_tup], 
-                                  rel_pos_map, map_start_coord]
+        if len(Akita_cell_types) == 1:
+            matrices = [map_from_vector(vector) for vector in vectors]
+        else:
+            matrices = [map_from_vector(vector) for vector in vectors[i]]
         
-        
-    for score in scores:
-        scores_results[score] = getattr(scoring_map_methods(matrices[0], matrices[1]), 
-                                        score)()
-        
-        if get_tracks and score in ['corr', 'mse']:
-            scores_results[f'{score}_track'] = getattr(scoring_map_methods(matrices[0], matrices[1]), 
-                                                       f'{score}_track')()
-            
+    
+        if revcomp:
+            matrices = [np.flipud(np.fliplr(x)) for x in matrices]
+    
 
+    
+        # Mask matrices
+        
+        if SVTYPE != 'BND' and abs(int(SVLEN)) > bin_size/2:
+    
+            var_rel_pos2 = var_rel_pos.copy()
+            matrices = mask_matrices(matrices[0], matrices[1], SVTYPE, abs(int(SVLEN)), var_rel_pos2)
+    
+            # If masking, the relative postion on the map depends on whether it's a duplication or deletion
+            # If duplication, the relative position of variant in the ALT sequence should be used
+            if SVTYPE == 'DUP':
+                rel_pos_map = get_bin(var_rel_pos[1])
+
+    
+        if SVTYPE == "BND":  
+    
+            matrices = get_masked_BND_maps(matrices, rel_pos_map)
+
+
+            
+        # Save maps, disruption scores, and tracks
+        
+        if get_maps:
+            map_start_coord = POS - var_rel_pos[0] + 32*bin_size
+            
+            triu_tup = np.triu_indices(target_length_cropped, hic_diags)
+            
+            scores_results[f'maps_{Akita_cell_types[i]}'] = [matrices[0][triu_tup], 
+                                                             matrices[1][triu_tup], 
+                                                             rel_pos_map, map_start_coord]
+            
+            
+        for score in scores:
+            scores_results[f'{score}_{Akita_cell_types[i]}'] = getattr(scoring_map_methods(matrices[0], matrices[1]), 
+                                                                       score)()
+            
+            if (get_tracks or use_roi) and score in ['corr', 'mse']:
+                disruption_track = getattr(scoring_map_methods(matrices[0], matrices[1]), f'{score}_track')()
+
+                if use_roi:
+
+                    if 0 in roi_weights:
+                        roi_weights.remove(0)
+                        
+                    if score == 'corr':
+                        scores_results[f'{score}_unweighted_{Akita_cell_types[i]}'] = np.average(disruption_track[~np.isnan(disruption_track)])
+                    
+                    for roi_weight in roi_weights:
+                        map_start_coord = POS - var_rel_pos[0] + 32*bin_size
+                        roi_in_map = get_roi_in_map(CHR, map_start_coord, rel_pos_map, SVTYPE, SVLEN)
+                        print(roi_in_map)
+                        scores_results[f'{score}_{roi_weight}-weighted_{Akita_cell_types[i]}'] = get_weighted_score(disruption_track, 
+                                                                                                                    roi_in_map, 
+                                                                                                                    roi_weight)[0]
+                        if roi_weight == roi_weights[0] and i == 0:
+                            roi_ids = get_weighted_score(disruption_track, roi_in_map, roi_weight)[1]
+                            scores_results['roi_id'] = ', '.join(roi_ids)
+
+                        
+                
+                if get_tracks:
+                    scores_results[f'{score}_track_{Akita_cell_types[i]}'] = disruption_track
+
+
+    
     return scores_results
 
 

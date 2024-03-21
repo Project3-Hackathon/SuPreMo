@@ -19,6 +19,8 @@ import matplotlib.gridspec as gridspec
 from pybedtools import BedTool
 import itertools
 
+from pathlib import Path
+
 
 
 # Get Akita measurements (specified in get_Akita_scores_utils)

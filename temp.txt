@@ -1,0 +1,3 @@
+CHROM	POS	END	ID	REF	ALT	SVTYPE	Quality	Gene	Filter	SVLEN	Algorithms	Evidence	LBD_ALT_FREQS	controls_ALT_FREQS	candidate_gene_exon_overlap	Candidate_gene_overlap	Candidate_gene_promoter_overlap	Candidate_gene_non_coding_overlap	genehancer	CADDSV-score	raw-score-span	raw-score-flank
+chr22	38001983	38002888	LBD_DEL_chr22_2165	N	DEL	DEL	820	PLA2G6	PASS	905	manta	PE,SR	0.000212314	0.0	Not_exonic	No_candidate_gene_overlap	No_promoter_overlap	No_non_coding_overlap	No_genehancer_overlap	2.966	0.02965691	0.02965691
+chr12	40487672	40487736	LBD_DEL_chr12_3237	N	DEL	DEL	391	LRRK2	PASS	64	manta	SR	0.0	0.00013725	Not_exonic	No_candidate_gene_overlap	No_promoter_overlap	No_non_coding_overlap	No_genehancer_overlap	4.603	0.17366718	-0.198147618

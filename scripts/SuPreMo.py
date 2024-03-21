@@ -150,6 +150,28 @@ parser.add_argument('--fa',
                     type = str,
                     required = False)
 
+parser.add_argument('--roi',
+                    dest = 'roi', 
+                    help = '''Path to text file with regions of intererst (roi) to use for scoring. Tab-delimited text file with required columns: chrom, start, end or chrom, start1, end1, start2, end2 for paired regions.
+''', 
+                    type = str,
+                    required = False)
+
+parser.add_argument('--roi_weights',
+                    dest = 'roi_weights', 
+                    nargs = '+',
+                    help = '''
+Value(s) for upweighing regions of interest (roi) when scoring maps. Must specify roi argument as well. For each value, a score will be generated. Only compatible with correlation and mse. Value(s) should be between 0 and 1, where:
+    0: no weighting on roi
+    0.5: roi contribute to half of the score
+    1: only roi are scored
+                    
+''', 
+                    type = float,
+                    default = [0.05],
+                    required = False)
+
+
 parser.add_argument('--genome',
                     dest = 'genome',
                     nargs = 1, 
@@ -157,6 +179,16 @@ parser.add_argument('--genome',
                     type = str,
                     choices = ['hg19', 'hg38'],
                     default = ['hg38'],
+                    required = False)
+
+parser.add_argument('--Akita_cell_types',
+                    dest = 'Akita_cell_types', 
+                    nargs = '+', 
+                    help = '''Cell types to make Akita predictions for: HFF, H1hESC, GM12878, IMR90, and/or HCT116.
+''', 
+                    type = str,
+                    choices = ['HFF', 'H1hESC', 'GM12878', 'IMR90', 'HCT116'],
+                    default = ['HFF'],
                     required = False)
 
 parser.add_argument('--scores',
@@ -320,7 +352,10 @@ args = parser.parse_args()
 in_file = args.in_file
 input_sequences = args.sequences
 fasta_path = args.fasta
+roi = args.roi
+roi_weights = args.roi_weights
 genome = args.genome[0]
+Akita_cell_types = args.Akita_cell_types
 scores_to_use = args.scores
 shift_by = args.shift_window
 out_file = args.out_file
@@ -377,12 +412,16 @@ elif svlen_limit > 2/3*seq_len:
     raise ValueError("Maximum SV length limit should not be >2/3 of sequence length.")
 
 if not get_seq and not get_Akita_scores:
-    raise ValueError('Either get_seq and/or get_Akita_scores must be True.')
+    raise ValueError('Either get_seq and/or get_Akita_scores must be specified.')
+
+if roi is not None and not get_Akita_scores:
+    raise ValueError('get_Akita_scores must be specified to use roi.')
     
 
 # Adjust shift input: Remove shifts that are outside of allowed range
 max_shift = 0.4*seq_len
 shift_by = [x for x in shift_by if x > -max_shift and x < max_shift]
+
 
 
 # Adjust input for taking the reverse complement
@@ -436,14 +475,14 @@ fasta_open = pysam.Fastafile(fasta_path)
 
 # Assign necessary values to variables across module
 
-# Module 1: reading utilities
+# Reading utilities
 import sys
 sys.path.insert(0, 'scripts/')
 import reading_utils
 reading_utils.var_set_size = var_set_size
 
 
-# Module 2: get_seq utilities
+# SuPreMo utilities
 import get_seq_utils
 get_seq_utils.fasta_open = fasta_open
 get_seq_utils.chrom_lengths = chrom_lengths
@@ -454,12 +493,26 @@ get_seq_utils.seq_length = seq_len
 get_seq_utils.half_patch_size = round(seq_len/2)
 
 
-# Module 2: get_Akita_scores utilities
+# SuPreMo-Akita utilities
 if get_Akita_scores:
     import get_Akita_scores_utils
     get_Akita_scores_utils.chrom_lengths = chrom_lengths
     get_Akita_scores_utils.centromere_coords = centromere_coords
+   
+    if roi is None or roi_weights == [0]:
+        use_roi = False
+    else:
+        use_roi = True
+        
+        import get_roi_utils
+        get_roi_utils.pred_len = get_Akita_scores_utils.target_length_cropped * get_Akita_scores_utils.bin_size
+        get_roi_utils.d = get_Akita_scores_utils.bin_size * 5
 
+        get_Akita_scores_utils.roi_coords_BED = get_roi_utils.get_roi(roi, genome)
+        
+        from pybedtools import BedTool
+        get_Akita_scores_utils.BedTool = BedTool
+        get_Akita_scores_utils.roi_weights = roi_weights
    
     
 import sys
@@ -497,6 +550,9 @@ while True:
                'var_index'] += '-'+g.cumcount().astype(str)
         
     variant_scores = pd.DataFrame({'var_index':variants.var_index})
+
+    if use_roi:
+        variant_roi_ids = pd.DataFrame({'var_index':variants.var_index})
     
   
 
@@ -577,72 +633,79 @@ while True:
 
             for revcomp in revcomp_decision_i:
 
-                try:
+                # try:
 
-                    if revcomp:
-                        revcomp_annot = '_revcomp'
-                    else:
-                        revcomp_annot = ''
+                if revcomp:
+                    revcomp_annot = '_revcomp'
+                else:
+                    revcomp_annot = ''
 
-                    if input_sequences is not None:
+                if input_sequences is not None:
 
-                        # Generate sequences_i from sequence input
-                        if revcomp_annot == '':
-                            sequence_names = [x for x in seq_names if x.startswith(f'{var_index}_{shift}') and 
-                                              'revcomp' not in x]
-                        elif revcomp_annot == '_revcomp':
-                            sequence_names = [x for x in seq_names if x.startswith(f'{var_index}_{shift}{revcomp_annot}')]
+                    # Generate sequences_i from sequence input
+                    if revcomp_annot == '':
+                        sequence_names = [x for x in seq_names if x.startswith(f'{var_index}_{shift}') and 
+                                          'revcomp' not in x]
+                    elif revcomp_annot == '_revcomp':
+                        sequence_names = [x for x in seq_names if x.startswith(f'{var_index}_{shift}{revcomp_annot}')]
 
-                        sequences_i = []
-                        for sequence_name in sequence_names:
-                            sequences_i.append(pysam.Fastafile(input_sequences).fetch(sequence_name, 0, seq_len).upper())
+                    sequences_i = []
+                    for sequence_name in sequence_names:
+                        sequences_i.append(pysam.Fastafile(input_sequences).fetch(sequence_name, 0, seq_len).upper())
 
-                        sequences_i.append([int(x) for x in sequence_name.split('[')[1].split(']')[0].split('_')])
-                        
+                    sequences_i.append([int(x) for x in sequence_name.split('[')[1].split(']')[0].split('_')])
+                    
 
-                    else:
+                else:
 
-                        # Create sequences_i from variant input
-                        sequences_i = get_seq_utils.get_sequences_SV(CHR, POS, REF, ALT, END, SVTYPE, shift, revcomp)
-                        
+                    # Create sequences_i from variant input
+                    sequences_i = get_seq_utils.get_sequences_SV(CHR, POS, REF, ALT, END, SVTYPE, shift, revcomp)
+                    
 
-                    if get_seq:
+                if get_seq:
 
-                        # Get relative position of variant in sequence
-                        var_rel_pos = str(sequences_i[-1]).replace(', ', '_')
+                    # Get relative position of variant in sequence
+                    var_rel_pos = str(sequences_i[-1]).replace(', ', '_')
 
-                        for ii in range(len(sequences_i[:-1][:3])): 
-                            sequences[f'{var_index}_{shift}{revcomp_annot}_{ii}_{var_rel_pos}'] = sequences_i[:-1][ii]
+                    for ii in range(len(sequences_i[:-1][:3])): 
+                        sequences[f'{var_index}_{shift}{revcomp_annot}_{ii}_{var_rel_pos}'] = sequences_i[:-1][ii]
 
-                    if get_Akita_scores:
-
-                        scores = get_Akita_scores_utils.get_scores(POS, SVTYPE, SVLEN, 
-                                                                   sequences_i, scores_to_use, 
-                                                                   shift, revcomp, 
-                                                                   get_tracks, get_maps)
-
-
-                        if get_tracks:
-                            for track in [x for x in scores.keys() if 'track' in x]:
-                                variant_tracks[f'{var_index}_{track}_{shift}{revcomp_annot}'] = scores[track]
-                                del scores[track]
-
-                        if get_maps:
-                            variant_maps[f'{var_index}_{shift}{revcomp_annot}'] = scores['maps']
-                            del scores['maps']
-
-                        for score in scores:
-                            variant_scores.loc[variant_scores.var_index == var_index, 
-                                               f'{score}_{shift}{revcomp_annot}'] = scores[score]
+                if get_Akita_scores:
+                    
+                    scores = get_Akita_scores_utils.get_scores(CHR, POS, SVTYPE, SVLEN, 
+                                                               sequences_i, scores_to_use, 
+                                                               shift, revcomp, 
+                                                               get_tracks, get_maps, use_roi, Akita_cell_types)
 
 
-                    print(str(var_index) + ' (' + str(shift) + f' shift{revcomp_annot})')
+                    if get_tracks:
+                        for track in [x for x in scores.keys() if 'track' in x]:
+                            variant_tracks[f'{var_index}_{track}_{shift}{revcomp_annot}'] = scores[track]
+                            del scores[track]
 
-                except Exception as e: 
+                    if get_maps:
+                        for map in [x for x in scores.keys() if 'map' in x]:
+                            variant_maps[f'{var_index}_{map}_{shift}{revcomp_annot}'] = scores[map]
+                            del scores[map]
 
-                    print(str(var_index) + ' (' + str(shift) + f' shift{revcomp_annot})' + ': Error:', e)
+                    if use_roi:
+                        for roi_ids in [x for x in scores.keys() if 'roi_id' in x]:
+                            variant_roi_ids.loc[variant_scores.var_index == var_index, f'roi_ids_{shift}'] = scores[roi_ids]
+                            del scores[roi_ids]
 
-                    pass
+
+                    for score in scores:
+                        variant_scores.loc[variant_scores.var_index == var_index, 
+                                           f'{score}_{shift}{revcomp_annot}'] = scores[score]
+
+
+                print(str(var_index) + ' (' + str(shift) + f' shift{revcomp_annot})')
+
+                # except Exception as e: 
+
+                #     print(str(var_index) + ' (' + str(shift) + f' shift{revcomp_annot})' + ': Error:', e)
+
+                #     pass
  
     
       
@@ -694,8 +757,12 @@ while True:
         
         if var_set == 0:
             variant_scores.to_csv(f'{out_file}_scores_{var_set}', sep = '\t', index = False)
+            if use_roi:
+                variant_roi_ids.to_csv(f'{out_file}_roi_ids_{var_set}', sep = '\t', index = False)
         else:
             variant_scores.to_csv(f'{out_file}_scores_{var_set}', sep = '\t', index = False, header = False)
+            if use_roi:
+                variant_roi_ids.to_csv(f'{out_file}_roi_ids_{var_set}', sep = '\t', index = False, header = False)
     
     
     if get_tracks:
@@ -760,6 +827,11 @@ if get_Akita_scores:
                 for file in {out_file}_scores_*; \
                 do cat "$file" >> {out_file}_scores && rm "$file"; \
                 done')
+    if use_roi:
+        os.system(f'rm -f {out_file}_roi_ids; \
+                    for file in {out_file}_roi_ids_*; \
+                    do cat "$file" >> {out_file}_roi_ids && rm "$file"; \
+                    done')
 
 
 

@@ -1,0 +1,4 @@
+CHROM	POS	END	REF	ALT	SVLEN	Gene	candidate_gene_exon_overlap	Candidate_gene_overlap	Candidate_gene_promoter_overlap	Candidate_gene_non_coding_overlap	genehancer	CADDSV-score	raw-score-span	raw-score-flank
+chr3	86262482	86262574	N	DUP	92	CHMP2B	Not_exonic	No_candidate_gene_overlap	No_promoter_overlap	No_non_coding_overlap	No_genehancer_overlap	1.502	-0.039443682	-0.039443682
+chr3	86280275	86280326	N	INS:ME:ALU	280	CHMP2B	Not_exonic	No_candidate_gene_overlap	No_promoter_overlap	No_non_coding_overlap	No_genehancer_overlap	1.616	0.198380386	0.198380386
+chr3	86322973	86329937	N	CPX	7086	CHMP2B	Not_exonic	No_candidate_gene_overlap	No_promoter_overlap	No_non_coding_overlap	No_genehancer_overlap			
