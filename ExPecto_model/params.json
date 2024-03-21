@@ -1,0 +1,16 @@
+{
+    "beluga_model_file": "/home/yang/Project/SuPreMo/ExPecto_model/resources/deepsea.beluga.pth",
+    "is_cuda": "False",
+    "model_list_file": "/home/yang/Project/SuPreMo/ExPecto_model/resources/modellist",
+    "gene_tss_file": "/home/yang/Project/SuPreMo/ExPecto_model/resources/geneanno.hg38.sorted.bed.gz",
+    "model_dir": "/home/yang/Project/SuPreMo/ExPecto_model",
+    "model_name": ["Fibroblast of Lung", "Small Intestine", "Small Intestine Terminal Ileum"],
+    "threads":36,
+    "n_features": 2002,
+    "fixed_dist": 100,
+    "maxshift": 800,
+    "split_flag": 1,
+    "split_index": 0,
+    "split_fold": 10,
+    "verbose_level": 0
+}

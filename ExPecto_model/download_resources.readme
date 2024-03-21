@@ -1,0 +1,8 @@
+
+# Got to https://github.com/FunctionLab/ExPecto/
+following the instruction to download the following folder/files
+
+1. download the whole models folder https://github.com/FunctionLab/ExPecto/tree/master/models
+2. download the whole resources folder https://github.com/FunctionLab/ExPecto/tree/master/resources
+3. download the "deepsea.beluga.pth"  using the download_resources.sh script and put deepsea.beluga.pth under the resources folder
+

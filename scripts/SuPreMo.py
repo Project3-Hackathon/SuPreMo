@@ -305,6 +305,12 @@ parser.add_argument('--get_Akita_scores',
                     action='store_true',
                     required = False)
 
+parser.add_argument('--get_ExPecto_scores',
+                    dest = 'get_expecto_scores',
+                    help = '''Get Expeecto predicted gene expression changes, change the model list inside the ExPecto_model to get the gene expression only in a specific cell type.''',
+                    action='store_true',
+                    required = False)
+
 parser.add_argument('--nrows',
                     dest = 'nrows', 
                     help = '''Number of rows (perturbations) to read at a time from input. When dealing with large inputs, selecting a subset of rows to read at a time allows scores to be saved in increments and uses less memory. Files with scores and filtered out variants will be temporarily saved in output direcotry. The file names will have a suffix corresponding to the set of nrows (0-based), for example for an input with 2700 rows and with nrows = 1000, there will be 3 sets. At the end of the run, these files will be concatenated into a comprehensive file and the temporary files will be removed.
@@ -333,6 +339,7 @@ get_seq = args.get_seq
 get_tracks = args.get_tracks
 get_maps = args.get_maps
 get_Akita_scores = args.get_Akita_scores
+get_expecto_scores = args.get_expecto_scores
 var_set_size = args.nrows
 
 
@@ -376,7 +383,7 @@ if svlen_limit is None:
 elif svlen_limit > 2/3*seq_len:
     raise ValueError("Maximum SV length limit should not be >2/3 of sequence length.")
 
-if not get_seq and not get_Akita_scores:
+if not get_seq and not get_Akita_scores and not get_expecto_scores:
     raise ValueError('Either get_seq and/or get_Akita_scores must be True.')
     
 
@@ -460,7 +467,25 @@ if get_Akita_scores:
     get_Akita_scores_utils.chrom_lengths = chrom_lengths
     get_Akita_scores_utils.centromere_coords = centromere_coords
 
-   
+# Modele x: get_ExPecto_score utilities
+if get_expecto_scores:
+    import get_ExPecto_scores_utils
+    import h5py
+    get_seq = True
+    sequences = {}
+    # overwrite revcomp_decision, ExPecto will do the reverse complement by itself
+    revcomp_decision = [False]
+    # load ExPecto parameters
+    expecto_params = get_ExPecto_scores_utils.load_expecto_params(params_file = get_ExPecto_scores_utils.params_file)
+    get_ExPecto_scores_utils.verbose_level = expecto_params['verbose_level']
+    get_ExPecto_scores_utils.expecto_beluga_model = get_ExPecto_scores_utils.load_model(expecto_params["beluga_model_file"], is_cuda = expecto_params["is_cuda"] == "True")
+    # remove any existing hdf5 file
+    os.system(f'rm -f {out_file}_beluga.shift_*.h5')
+    # overwrite shift_by parameters
+    maxshift = int(expecto_params['maxshift'])
+    shift_by = [0, ] + list(range(-200, -maxshift - 1, -200)) + list(range(200, maxshift + 1, 200))
+
+
     
 import sys
 import numpy as np
@@ -598,13 +623,13 @@ while True:
                             sequences_i.append(pysam.Fastafile(input_sequences).fetch(sequence_name, 0, seq_len).upper())
 
                         sequences_i.append([int(x) for x in sequence_name.split('[')[1].split(']')[0].split('_')])
-                        
+
 
                     else:
 
                         # Create sequences_i from variant input
                         sequences_i = get_seq_utils.get_sequences_SV(CHR, POS, REF, ALT, END, SVTYPE, shift, revcomp)
-                        
+
 
                     if get_seq:
 
@@ -634,7 +659,12 @@ while True:
                         for score in scores:
                             variant_scores.loc[variant_scores.var_index == var_index, 
                                                f'{score}_{shift}{revcomp_annot}'] = scores[score]
-
+                
+                    if get_expecto_scores: 
+                        variant_scores = get_ExPecto_scores_utils.get_effects(CHR, POS, REF, ALT, SVTYPE, SVLEN, sequences_i, shift, revcomp, var_index, inputsize = 2000, beluga_model = get_ExPecto_scores_utils.expecto_beluga_model, beluga_checkpoint_prefix = f'{out_file}_beluga.', ExPecto_params = expecto_params)
+                        # save variant scores for this variant  
+                        if variant_scores is not None:
+                            variant_scores.to_csv(f'{out_file}_expecto_scores_{var_index}_{shift}', sep = '\t', index = False, header = False)
 
                     print(str(var_index) + ' (' + str(shift) + f' shift{revcomp_annot})')
 
@@ -644,7 +674,6 @@ while True:
 
                     pass
  
-    
       
     # Write standard output with error messages and warnings to log file
     sys.stdout = std_output
@@ -716,7 +745,6 @@ while True:
             variant_maps_all.update(variant_maps)
         
         
-        
     var_set_list.append(var_set)
     var_set += 1
 
@@ -761,6 +789,10 @@ if get_Akita_scores:
                 do cat "$file" >> {out_file}_scores && rm "$file"; \
                 done')
 
+if get_expecto_scores:
+    # merge all the expecto scores
+    os.system(f'rm -f {out_file}_expecto_scores.tsv')
+    os.system(f' for file in {out_file}_expecto_scores_*; do cat "$file" >> {out_file}_expecto_scores.tsv && rm "$file"; done')
 
 
 # Adjust log file to only have 1 row per variant

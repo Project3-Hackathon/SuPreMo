@@ -90,6 +90,16 @@ python scripts/test_install_SuPreMo-Akita.py
 
 For running walkthroughs/tutorials, Jupyter and Matplotlib are also required.
 
+**For SuPreMo-ExPecto:**
+1. Create conda environment
+```
+conda env create -f ExPecto_model/SuPremo_ExPecto_evn.yml
+conda activate expecto_env
+```
+
+2. Download ExPecto model file
+Following the instruction in ExPecto_model/download_resources.readme to downlod ExPecto model and put them into required folder
+
 
 ### **Download genome fasta file (optional\*)**
 ```shell
@@ -187,6 +197,10 @@ For more details on how to use arguments, refer to help page printed at the top 
     * Dictionary item name format: {variant index<sup>1</sup>}_{method<sup>6</sup>}_{shift<sup>2</sup>}_{reverse complement<sup>3</sup>}
     * There is 1 entry per prediction: a 448x1 array.
     
+**SuPreMo-ExPecto output**
+- Variant effects on nearby genes (+/-20kb of the variant)
+    * Tab-delimited text file
+    * columns are "var_index", "var_type", "gene_id", "shift", "cell_id", "effect", "distance", "strand"
     
 Superscript descriptions:
 1. Input row number. (For sequences, this is followed by _N for each allele of variants with multiple alternate alleles); 

@@ -29,12 +29,11 @@ from six.moves import reduce
 # This file path and model path
 repo_path = Path(__file__).parents[1]
 
-beluga_model_file  = f'{repo_path}/ExPecto_model/resources/deepsea.beluga.pth'
-tss_tabix_file_hg19 = f'{repo_path}/ExPecto_model/resources/geneanno.pc.sorted.bed.gz'
-tss_tabix_file_hg38 = f'{repo_path}/ExPecto_model/resources/geneanno.hg38.sorted.bed.gz'
+#beluga_model_file  = f'{repo_path}/ExPecto_model/resources/deepsea.beluga.pth'
+#tss_tabix_file_hg19 = f'{repo_path}/ExPecto_model/resources/geneanno.pc.sorted.bed.gz'
+#tss_tabix_file_hg38 = f'{repo_path}/ExPecto_model/resources/geneanno.hg38.sorted.bed.gz'
 params_file = f'{repo_path}/ExPecto_model/params.json'
-verbose_level = 0
-models = []
+#models = []
 
 ########################################
 # class for chromatin profile prediction
@@ -93,14 +92,15 @@ class Beluga(nn.Module):
         return self.model(x)
 
 
-def load_model(model_path = beluga_model_file, is_cuda = False):
+def load_model(model_path = f'{repo_path}/ExPecto_model/resources/deepsea.beluga.pth', is_cuda = False, verbose_level = 0):
     if os.path.exists(model_path):
         model = Beluga()
         model.load_state_dict(torch.load(model_path))
         model.eval()
         if is_cuda:
             model = model.cuda()
-        print(f"> ExPecto -> Model: {model_path} loaded.")
+        if verbose_level > 0:
+            print(f"> ExPecto -> Model: {model_path} loaded.")
     else:
         print("Model file: %s not found" % (model_path))
         sys.exit(1)
@@ -128,11 +128,14 @@ class GeneTSS(object):
 
 class ExPectoPrediction(object):
     def __init__(self, chr, pos, ref, alt, svtype, svlen, sequence, shift, revcomp, var_index, inputsize = 2000):
+        # verbose levels
+        self.verbose_level = 0
         self.chr = chr
         self.pos = pos
         self.ref = ref
         self.alt = alt
         self.svtype = svtype
+        self.variant_type_detail = None
         self.svlen = svlen
         self.sequence = sequence
         self.shift = shift
@@ -155,7 +158,18 @@ class ExPectoPrediction(object):
         self.chromatin_effect_hdf5_file = None
         # variables below are for gene expression prediction
     def report_variant_score(self):
-         
+        # build a row a dataframe
+        variant_score = []
+        if pd.isna(self.svtype):
+            variant_type = 'non-sv'
+        else:
+            variant_type = self.svtype
+        for gene in self.nearby_genes:
+            for cell_id in gene.score.keys():
+                variant_score.append([self.var_index, variant_type, gene.gene_id, self.shift, cell_id, gene.score[cell_id], gene.dist, gene.strand])
+        # convert to pandas dataframe
+        variant_score = pd.DataFrame(variant_score, columns = ['var_index', 'var_type', 'gene_id', 'shift', 'cell_id', 'gene_score', 'distance', 'strand'])
+        return variant_score
     def adjust_sequence_length(self):
         ref_seq = self.sequence[0]
         alt_seq = self.sequence[1]
@@ -167,11 +181,11 @@ class ExPectoPrediction(object):
             print("> ExPecto -> Sequence Encoding: Warning: Sequence length is too short, skip it!", sys.stderr)
             return None
         elif seq_length == self.inputsize: # do nothing
-            if verbose_level > 0:
+            if self.verbose_level > 0:
                 print("> ExPecto -> Sequence Encoding: Sequence length is 2000bp, no need to center the sequence.")
             pass
         else: # get the centered 2000bp sequence
-            if verbose_level > 0:
+            if self.verbose_level > 0:
                 print("> ExPecto -> Sequence Encoding: Sequence length is longer than 2000bp, centering the sequence.")
             ref_seq = ref_seq[seq_length//2 - self.inputsize//2: seq_length//2 + self.inputsize//2]
             alt_seq = alt_seq[seq_length//2 - self.inputsize//2: seq_length//2 + self.inputsize//2]
@@ -179,14 +193,14 @@ class ExPectoPrediction(object):
         self.ref_seq = ref_seq
         self.alt_seq = alt_seq
     def encode_seq(self):
-        if verbose_level > 0:
+        if self.verbose_level > 0:
             print("> ExPecto -> Sequence Encoding: Encoding the sequence.")
         self.ref_encode = encodeSeqs([self.ref_seq], inputsize=self.inputsize).astype(np.float32)
         self.alt_encode = encodeSeqs([self.alt_seq], inputsize=self.inputsize).astype(np.float32)
-        if verbose_level > 0:
+        if self.verbose_level > 0:
             print("> ExPecto -> Sequence Encoding: Sequence encoding completed.")
     def predict_chromatin_diff(self, beluga_model, is_cuda = False):
-        if verbose_level > 0:
+        if self.verbose_level > 0:
             print("> ExPecto -> Chromatin Effect Prediction: Predicting the chromatin effect.")
         # reference sequence prediction
         ref_preds = []
@@ -208,7 +222,7 @@ class ExPectoPrediction(object):
         effects_temp = alt_preds - ref_preds 
         self.chromatin_effect_diff = effects_temp.mean(axis = 0).reshape(1, -1)
     def save_chromatin_effect(self, hdf5_file):
-        if verbose_level > 0:
+        if self.verbose_level > 0:
             print("> ExPecto -> Chromatin Effect Prediction: Saving the chromatin effect to %s" % (hdf5_file))
         f = h5py.File(hdf5_file, 'w')
         f.create_dataset('pred', data = self.chromatin_effect_diff)
@@ -217,7 +231,7 @@ class ExPectoPrediction(object):
         f.close()
         self.chromatin_effect_hdf5_file = hdf5_file
     def get_nearby_genes(self, tss_tabix_file, distance_threshold = 20000):
-        if verbose_level > 0:
+        if self.verbose_level > 0:
             print("> ExPecto -> Nearby Gene Search: Searching for nearby genes.")
         # get gene tss tabix
         tb = tabix.open(tss_tabix_file)
@@ -250,7 +264,7 @@ class ExPectoPrediction(object):
             elif self.svtype == 'BND':
                 first = self.alt[0]
                 last = self.alt[-1]
-                another_chr, another_pos = parse_BND_alt_to_pos(self.alt)
+                another_chr, another_pos = parse_BND_alt_to_pos(self.alt, verbose_label = self.verbose_level)
                 if first in ['A', 'C', 'G', 'T', 'a', 'c', 'g', 't', 'N', 'n'] and last == '[':
                     self.BND_type = 'A_left->B_right' 
                 elif first == '[' and last in ['A', 'C', 'G', 'T', 'a', 'c', 'g', 't', 'N', 'n']:
@@ -298,7 +312,7 @@ class ExPectoPrediction(object):
                 else:
                     pass
             else:
-                if verbose_level > 0:
+                if self.verbose_level > 0:
                     print("> ExPecto -> Nearby Gene Search: Error: SV type (%s) is not known" % (self.svtype), file = sys.stderr)
     def search_gene(self, tb, query_chrom, query_start, query_end, query_pos):
         result = []
@@ -314,8 +328,8 @@ class ExPectoPrediction(object):
             gene_tss.cal_dist(query_pos)
             result.append(gene_tss)
         return result
-    def compute_effects(self, ExPecto_params):
-        if verbose_level > 0:
+    def compute_effects(self, ExPecto_params, models):
+        if self.verbose_level > 0:
             print("> ExPecto -> Computing ExPecto scores.")
         for gene in self.nearby_genes:
             scores = self.compute_effect_by_gene(np.array([gene.dist]), np.array([gene.strand]), self.chromatin_effect_diff, models, self.shift, ExPecto_params['old_format'], ExPecto_params['n_features'])
@@ -366,7 +380,7 @@ class ExPectoPrediction(object):
             effect[j] = models[j].predict(dtest_alt) - models[j].predict(dtest_ref)
         return effect
 
-def parse_BND_alt_to_pos(alt):   
+def parse_BND_alt_to_pos(alt, verbose_level = 0):   
     # A]chr6:73541678]
     # ]chr5:45700000]T
     if '[' in alt:
@@ -417,13 +431,64 @@ def encodeSeqs(seqs, inputsize=2000):
     return seq_encoding
 
 
-def get_effects(chr, pos, ref, alt, svtype, svlen, sequence, shift, revcomp, var_index, is_cuda = False, inputsize = 2000, beluga_model = None, beluga_checkpoint_prefix = None, ExPecto_params = None):
+def get_effects(chr, pos, ref, alt, svtype, svlen, sequence, shift, revcomp, var_index, is_cuda = False, inputsize = 2000, beluga_model = None, beluga_model_file = None, beluga_checkpoint_prefix = None, ExPecto_params = None):
     ########################################
     # construct ExPecto object
     ########################################
+    verbose_level = ExPecto_params['verbose_level']
     if verbose_level > 0:
         print(f'> ExPecto -> Getting ExPecto scores for {var_index} ({shift} revcomp:{revcomp})')
     expecto_task = ExPectoPrediction(chr, pos, ref, alt, svtype, svlen, sequence, shift, revcomp, var_index, inputsize)
+    expecto_task.verbose_level = verbose_level
+
+
+    ########################################
+    # check beluga model
+    ########################################
+    # load beluga model if not given
+    if beluga_model is None:
+        if verbose_level > 0:
+            print("> Expecto -> Loading the model.")
+            beluga_model = load_model(model_path = ExPecto_params['beluga_model_file'], is_cuda = is_cuda)
+
+    ########################################
+    # check prediction models
+    ########################################
+    models = []
+    if ExPecto_params['model_name'] == 'all':
+        use_all_models = True
+    else:
+        use_all_models = False
+    with open(ExPecto_params['model_list_file']) as fin:
+        N = 0
+        for line in fin:
+            if line[0] == '#':
+                continue
+            row = line.strip().split('\t')
+            if N == 0: # skip header
+                N += 1
+                continue
+            model_path, model_name = row[0], row[1]
+            model_file = os.path.join(ExPecto_params['model_dir'], model_path)
+            # check if model file exists
+            if not os.path.isfile(model_file):
+                print("> ExPecto -> Error: Model file %s does not exist." % (model_file), file = sys.stderr)
+            # load model
+            if not use_all_models:
+                if model_name in ExPecto_params['model_name']:
+                    bst = xgb.Booster({'nthread': ExPecto_params['threads']})
+                    bst.load_model(model_file.strip())
+                    models.append(bst)
+            else:
+                bst = xgb.Booster({'nthread': ExPecto_params['threads']})
+                bst.load_model(model_file.strip())
+                models.append(bst)
+        # backward compatibility with earlier model format
+        if len(models) > 0:
+            if len(models[0].get_dump()[0].split('\n')) == 20034:
+                ExPecto_params['old_format'] = True
+            else:
+                ExPecto_params['old_format'] = False
 
 
     ########################################
@@ -439,21 +504,15 @@ def get_effects(chr, pos, ref, alt, svtype, svlen, sequence, shift, revcomp, var
     ########################################
     expecto_task.adjust_sequence_length()
     # encode sequence
-    expecto_task.encode_seq()
-    # load beluga model if not given
-    if beluga_model is None:
-        print("Error")
-        if verbose_level > 0:
-            print("> Expecto -> Loading the model.")
-            beluga_model = load_model(model_path = beluga_model_file, is_cuda = is_cuda)
+    expecto_task.encode_seq() 
 
 
     ########################################
     # get all genes within 40kb of the variant
     ########################################
-    expecto_task.get_nearby_genes(tss_tabix_file = tss_tabix_file_hg38 , distance_threshold = 40000)
+    expecto_task.get_nearby_genes(tss_tabix_file = ExPecto_params["gene_tss_file"], distance_threshold = 40000)
     if len(expecto_task.nearby_genes) == 0:
-        print("> ExPecto -> Nearby Gene Search: No nearby genes found, skip this variant.")
+        print("> ExPecto -> Nearby Gene Search: No nearby genes found, skip variant: %s" % (expecto_task.var_index))
         return None
 
 
@@ -462,13 +521,13 @@ def get_effects(chr, pos, ref, alt, svtype, svlen, sequence, shift, revcomp, var
     ########################################
     expecto_task.predict_chromatin_diff(beluga_model, is_cuda)
     # save chromatin effect prediction into HDF5 file
-    expecto_task.save_chromatin_effect(beluga_checkpoint_prefix + str(var_index) + ".shift_" + str(shift) + ".diff.h5")
+    #expecto_task.save_chromatin_effect(beluga_checkpoint_prefix + str(var_index) + ".shift_" + str(shift) + ".diff.h5")
 
 
     ########################################
     # calculate the ExPecto scores
     ########################################
-    expecto_task.compute_effects(ExPecto_params)
+    expecto_task.compute_effects(ExPecto_params, models)
 
 
     # --------------------------------------
@@ -477,10 +536,11 @@ def get_effects(chr, pos, ref, alt, svtype, svlen, sequence, shift, revcomp, var
     if verbose_level > 0:
         print("> ExPecto -> ExPecto scores calculation done")
     # variant score variant_index, gene_id, gene_score, distance, strand 
-    return expecto_task
+    return expecto_task.report_variant_score()
 
 
 def load_expecto_params(params_file):
+    models = []
     # load json file
     with open(params_file) as f:
         expecto_params = json.load(f)
@@ -522,25 +582,6 @@ def load_expecto_params(params_file):
     #print(models)
     return expecto_params
 
-
-def get_scores(expecto_object, beluga_checkpoint_prefix = None):
-    ########################################
-    # calculate the ExPecto scores
-    ########################################
-    if expecto_object is None:
-        return None
-    # load pre-computed chromatin effect file
-    if verbose_level > 0:
-        print("")
-        print("> ExPecto -> Getting ExPecto scores.")
-    if beluga_checkpoint_prefix:
-        # list all the files for this variant
-        beluga_checkpoint_path = os.path.join(beluga_checkpoint_prefix.split("/")[:-1])
-        for file in os.listdir(beluga_checkpoint_path):
-            target_file = os.path.join(beluga_checkpoint_prefix, str(expecto_object.var_index) + ".shift_" + str(shift) + ".diff.h5")
-            print(target_file)
-            print(file)
-        
 
     # load model list
     # 

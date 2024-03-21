@@ -1,0 +1,33 @@
+
+```{r}
+library(ggplot2)
+library(cowplot)
+library(dplyr)
+# load score
+data_score = read.table(file = "SuPreMo_expecto_scores.tsv", header = F, sep = '\t')
+colnames(data_score) <- c("var_index", "var_type", "gene_id", "shift", "cell_id", "effect", "distance", "strand")
+# 
+plot_variant_effect <- data_score %>%
+  group_by(var_index, gene_id, cell_id, distance, strand) %>%
+  summarise(total_effect = mean(effect)) %>%
+  ggplot(aes(x = distance, y = total_effect, fill = total_effect, size = abs(total_effect))) +
+  geom_vline(xintercept = 0.0, linetype = 2, color = "black") +
+  geom_point(pch = 21, color = "black", stroke = 0.1) +
+  facet_wrap(~ cell_id, ncol = 1) +
+  xlab("Distance to TSS of IRGM1 gene") +
+  ylab("Variant effect (log fold change)") +
+  #scale_color_distiller(type = "seq", palette = 1, direction = -1) +
+  scale_fill_gradient2(name = "", low = "#2166ac", mid = "white", high = "#b2182b", midpoint = 0) +
+  scale_x_continuous(expand = c(0,0)) +
+  scale_size("", range = c(0.1, 3)) +
+  coord_cartesian(xlim = c(-4000, 4000)) +
+  theme_cowplot() +
+  theme(strip.background = element_blank()) +
+  theme(legend.position = "none") +
+  theme(strip.text.x = element_text(face = "bold", size = 12)) +
+  theme(axis.title = element_text(size = 12)) +
+  theme(axis.text = element_text(size = 10))
+print(plot_variant_effect)
+```
+
+
