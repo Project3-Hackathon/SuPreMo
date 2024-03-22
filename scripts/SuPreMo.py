@@ -4,8 +4,8 @@
 # Written in Python v 3.7.11
 
 '''
-usage: SuPreMo [-h] [--sequences SEQUENCES] [--fa FASTA] [--genome {hg19,hg38}]
-               [--scores {mse,corr,ssi,scc,ins,di,dec,tri,pca} [{mse,corr,ssi,scc,ins,di,dec,tri,pca} ...]] [--shift_by SHIFT_WINDOW [SHIFT_WINDOW ...]]
+usage: SuPreMo [-h] [--sequences SEQUENCES] [--fa FASTA] [--genome {hg19,hg38}] [--personalized_genome VCF]
+               [--scores {mse,corr,ssi,scc,ins,di,dec,tri,pca} [{mse,corr,ssi,scc,ins,di,dec,tri,pca} ...]] [--control_scores SCORE_FILE] [--shift_by SHIFT_WINDOW [SHIFT_WINDOW ...]]
                [--file OUT_FILE] [--dir OUT_DIR] [--limit SVLEN_LIMIT] [--seq_len SEQ_LEN] [--revcomp {no_revcomp,add_revcomp,only_revcomp}] [--augment]
                [--get_seq] [--get_tracks] [--get_maps] [--get_Akita_scores] [--nrows NROWS]
                Input file
@@ -43,6 +43,8 @@ optional arguments:
                             tri: Triangle method
                             pca: Principal component method.
                          (default: ['mse', 'corr'])
+  --control_scores CONTROL_SCORE_FILE
+                        Optional tab-separated file with control scores to calculate p-values for current target variants.
   --shift_by SHIFT_WINDOW [SHIFT_WINDOW ...]
                         Values for shifting prediciton windows inputted as space-separated integers (e.g. -1 0 1). Values outside of range -450000 ≤ x ≤ 450000 will be ignored. Prediction windows at the edge of chromosome arms will only be shifted in the direction that is possible (ex. for window at chrom start, a -1 shift will be treated as a 1 shift since it is not possible to shift left).
                          (default: [0])
@@ -189,6 +191,12 @@ Method(s) used to calculate disruption scores. Use abbreviations as follows:
                     choices = ['mse', 'corr',  'ssi', 'scc', 'ins',  'di', 'dec', 'tri', 'pca'],
                     default = ['mse', 'corr'],
                     required = False)
+
+parser.add_argument('--control_scores',
+                    dest='control_scores',
+                    help='''Path to file of control scores to calculate p-values for current target variants.''',
+                    type=str,
+                    required=False)
 
 parser.add_argument('--shift_by', 
                     dest = 'shift_window',
@@ -462,6 +470,12 @@ chrom_lengths = pd.read_table(chrom_lengths_path, header = None, names = ['CHROM
 centromere_coords = pd.read_table(centromere_coords_path, sep = '\t')
 fasta_open = pysam.Fastafile(fasta_path)
 
+# If control scores were provided, load them in to calculate p-values
+if args.control_scores:
+    # --control_scores was provided
+    import get_target_p_values
+    input_control_scores_file = args.control_scores
+    input_control_scores = pd.read_csv(input_control_scores_file, delimiter='\t')
 
 # Assign necessary values to variables across module
 
@@ -720,7 +734,10 @@ while True:
                               .transform(','.join)
                               .reset_index()
                               .drop_duplicates())
-        
+        if args.control_scores:
+            # --control_scores was provided
+            variant_scores = get_target_p_values.calculate_p_values(variant_scores, input_control_scores)
+
         if var_set == 0:
             variant_scores.to_csv(f'{out_file}_scores_{var_set}', sep = '\t', index = False)
         else:
