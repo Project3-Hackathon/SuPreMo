@@ -157,18 +157,13 @@ parser.add_argument('--roi',
                     type = str,
                     required = False)
 
-parser.add_argument('--roi_weights',
-                    dest = 'roi_weights', 
+parser.add_argument('--roi_scales',
+                    dest = 'roi_scales', 
                     nargs = '+',
-                    help = '''
-Value(s) for upweighing regions of interest (roi) when scoring maps. Must specify roi argument as well. For each value, a score will be generated. Only compatible with correlation and mse. Value(s) should be between 0 and 1, where:
-    0: no weighting on roi
-    0.5: roi contribute to half of the score
-    1: only roi are scored
-                    
+                    help = '''Scale by which regions of interest (roi) are upweighted compared to the rest of the map. Default is 10 meaning regions of interest have weights of 10 whereas the rest of the bins have weights of 1.
 ''', 
-                    type = float,
-                    default = [0.05],
+                    type = int,
+                    default = [10],
                     required = False)
 
 
@@ -218,6 +213,12 @@ parser.add_argument('--shift_by',
 ''',
                     type = int,
                     default = [0],
+                    required = False)
+
+parser.add_argument('--shifts_file',
+                    dest = 'shifts_file', 
+                    help = 'Path to file with values to shift each variant by. Required when not all variants are shifted by the same amount. File should be a text file with the same number of rows as the input file and a column which contains a shift value (negative or positive integer) by which to shift the variants in the corresponding row of the input file.', 
+                    type = str,
                     required = False)
 
 parser.add_argument('--file',
@@ -353,11 +354,12 @@ in_file = args.in_file
 input_sequences = args.sequences
 fasta_path = args.fasta
 roi = args.roi
-roi_weights = args.roi_weights
+roi_scales = args.roi_scales
 genome = args.genome[0]
 Akita_cell_types = args.Akita_cell_types
 scores_to_use = args.scores
 shift_by = args.shift_window
+shifts_file = args.shifts_file
 out_file = args.out_file
 out_dir = args.out_dir
 svlen_limit = args.svlen_limit
@@ -418,10 +420,10 @@ if roi is not None and not get_Akita_scores:
     raise ValueError('get_Akita_scores must be specified to use roi.')
     
 
+
 # Adjust shift input: Remove shifts that are outside of allowed range
 max_shift = 0.4*seq_len
 shift_by = [x for x in shift_by if x > -max_shift and x < max_shift]
-
 
 
 # Adjust input for taking the reverse complement
@@ -499,7 +501,7 @@ if get_Akita_scores:
     get_Akita_scores_utils.chrom_lengths = chrom_lengths
     get_Akita_scores_utils.centromere_coords = centromere_coords
    
-    if roi is None or roi_weights == [0]:
+    if roi is None or roi_scales == [0]:
         use_roi = False
     else:
         use_roi = True
@@ -512,7 +514,7 @@ if get_Akita_scores:
         
         from pybedtools import BedTool
         get_Akita_scores_utils.BedTool = BedTool
-        get_Akita_scores_utils.roi_weights = roi_weights
+        get_Akita_scores_utils.roi_scales = roi_scales
    
     
 import sys
@@ -531,7 +533,11 @@ while True:
     variants = reading_utils.read_input(in_file, var_set)
     if len(variants) == 0:
         break
-        
+    if shifts_file is not None:
+        variants = pd.concat([variants, 
+                              pd.read_csv(shifts_file, sep = '\t', low_memory=False, names = ['shift_by'],
+                               skiprows = 1 + var_set*var_set_size, nrows = var_set_size)],
+                             axis = 1)
         
     # Index input based on row number and create output with same indexes
     variants['var_index'] = list(range(var_set*var_set_size, var_set*var_set_size + len(variants)))
@@ -604,6 +610,7 @@ while True:
 
     # Loop through each row (not index) and get disruption scores 
     for i in range(len(variants)):
+        
 
         variant = variants.iloc[i]
 
@@ -623,6 +630,9 @@ while True:
             SVTYPE = np.nan
             SVLEN = 0
 
+        if shifts_file is not None:
+            shift_by = [int(variant.shift_by)]
+
         for shift in shift_by:
 
             # Take reverse complement only with 0 shift
@@ -633,79 +643,81 @@ while True:
 
             for revcomp in revcomp_decision_i:
 
-                # try:
+                try:
 
-                if revcomp:
-                    revcomp_annot = '_revcomp'
-                else:
-                    revcomp_annot = ''
+                    if revcomp:
+                        revcomp_annot = '_revcomp'
+                    else:
+                        revcomp_annot = ''
+    
+                    if input_sequences is not None:
+    
+                        # Generate sequences_i from sequence input
+                        if revcomp_annot == '':
+                            sequence_names = [x for x in seq_names if x.startswith(f'{var_index}_{shift}') and 
+                                              'revcomp' not in x]
+                        elif revcomp_annot == '_revcomp':
+                            sequence_names = [x for x in seq_names if x.startswith(f'{var_index}_{shift}{revcomp_annot}')]
+    
+                        sequences_i = []
+                        for sequence_name in sequence_names:
+                            sequences_i.append(pysam.Fastafile(input_sequences).fetch(sequence_name, 0, seq_len).upper())
+    
+                        sequences_i.append([int(x) for x in sequence_name.split('[')[1].split(']')[0].split('_')])
+                        
+    
+                    else:
+    
+                        # Create sequences_i from variant input
+                        sequences_i = get_seq_utils.get_sequences_SV(CHR, POS, REF, ALT, END, SVTYPE, shift, revcomp)
+                        
+    
+                    if get_seq:
+    
+                        # Get relative position of variant in sequence
+                        var_rel_pos = str(sequences_i[-1]).replace(', ', '_')
+    
+                        for ii in range(len(sequences_i[:-1][:3])): 
+                            sequences[f'{var_index}_{shift}{revcomp_annot}_{ii}_{var_rel_pos}'] = sequences_i[:-1][ii]
+    
+                    if get_Akita_scores:
+                        
+                        scores = get_Akita_scores_utils.get_scores(CHR, POS, SVTYPE, SVLEN, 
+                                                                   sequences_i, scores_to_use, 
+                                                                   shift, revcomp, 
+                                                                   get_tracks, get_maps, use_roi, Akita_cell_types)
+    
+                        if get_tracks:
+                            for track in [x for x in scores.keys() if 'track' in x]:
+                                variant_tracks[f'{var_index}_{track}_{shift}{revcomp_annot}'] = scores[track]
+                                del scores[track]
+    
+                        if get_maps:
+                            for map in [x for x in scores.keys() if 'map' in x]:
+                                variant_maps[f'{var_index}_{map}_{shift}{revcomp_annot}'] = scores[map]
+                                del scores[map]
+                                                
+                        if shifts_file is not None:
+                            shift = 'shifted'
+    
+                        if use_roi:
+                            for roi_ids in [x for x in scores.keys() if 'roi_id' in x]:
+                                variant_roi_ids.loc[variant_scores.var_index == var_index, f'roi_ids_{shift}'] = scores[roi_ids]
+                                del scores[roi_ids]
+    
+    
+                        for score in scores:
+                            variant_scores.loc[variant_scores.var_index == var_index, 
+                                               f'{score}_{shift}{revcomp_annot}'] = scores[score]
+    
+    
+                    print(str(var_index) + ' (' + str(shift) + f' shift{revcomp_annot})')
 
-                if input_sequences is not None:
+                except Exception as e: 
 
-                    # Generate sequences_i from sequence input
-                    if revcomp_annot == '':
-                        sequence_names = [x for x in seq_names if x.startswith(f'{var_index}_{shift}') and 
-                                          'revcomp' not in x]
-                    elif revcomp_annot == '_revcomp':
-                        sequence_names = [x for x in seq_names if x.startswith(f'{var_index}_{shift}{revcomp_annot}')]
+                    print(str(var_index) + ' (' + str(shift) + f' shift{revcomp_annot})' + ': Error:', e)
 
-                    sequences_i = []
-                    for sequence_name in sequence_names:
-                        sequences_i.append(pysam.Fastafile(input_sequences).fetch(sequence_name, 0, seq_len).upper())
-
-                    sequences_i.append([int(x) for x in sequence_name.split('[')[1].split(']')[0].split('_')])
-                    
-
-                else:
-
-                    # Create sequences_i from variant input
-                    sequences_i = get_seq_utils.get_sequences_SV(CHR, POS, REF, ALT, END, SVTYPE, shift, revcomp)
-                    
-
-                if get_seq:
-
-                    # Get relative position of variant in sequence
-                    var_rel_pos = str(sequences_i[-1]).replace(', ', '_')
-
-                    for ii in range(len(sequences_i[:-1][:3])): 
-                        sequences[f'{var_index}_{shift}{revcomp_annot}_{ii}_{var_rel_pos}'] = sequences_i[:-1][ii]
-
-                if get_Akita_scores:
-                    
-                    scores = get_Akita_scores_utils.get_scores(CHR, POS, SVTYPE, SVLEN, 
-                                                               sequences_i, scores_to_use, 
-                                                               shift, revcomp, 
-                                                               get_tracks, get_maps, use_roi, Akita_cell_types)
-
-
-                    if get_tracks:
-                        for track in [x for x in scores.keys() if 'track' in x]:
-                            variant_tracks[f'{var_index}_{track}_{shift}{revcomp_annot}'] = scores[track]
-                            del scores[track]
-
-                    if get_maps:
-                        for map in [x for x in scores.keys() if 'map' in x]:
-                            variant_maps[f'{var_index}_{map}_{shift}{revcomp_annot}'] = scores[map]
-                            del scores[map]
-
-                    if use_roi:
-                        for roi_ids in [x for x in scores.keys() if 'roi_id' in x]:
-                            variant_roi_ids.loc[variant_scores.var_index == var_index, f'roi_ids_{shift}'] = scores[roi_ids]
-                            del scores[roi_ids]
-
-
-                    for score in scores:
-                        variant_scores.loc[variant_scores.var_index == var_index, 
-                                           f'{score}_{shift}{revcomp_annot}'] = scores[score]
-
-
-                print(str(var_index) + ' (' + str(shift) + f' shift{revcomp_annot})')
-
-                # except Exception as e: 
-
-                #     print(str(var_index) + ' (' + str(shift) + f' shift{revcomp_annot})' + ': Error:', e)
-
-                #     pass
+                    pass
  
     
       
@@ -838,7 +850,7 @@ if get_Akita_scores:
 # Adjust log file to only have 1 row per variant
 if os.path.exists(f'{out_file}_log'):
 
-    log_file = pd.read_csv(f'{out_file}_log', names = ['output']) 
+    log_file = pd.read_csv(f'{out_file}_log', names = ['output'], sep = '\t') 
     # Move warnings (printed 1 line before variant) to variant line
     indexes = np.array([[index, index+1] for (index, item) in enumerate(log_file.output) if item.startswith('Warning')])
     

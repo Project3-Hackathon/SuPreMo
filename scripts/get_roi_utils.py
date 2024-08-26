@@ -45,14 +45,15 @@ def get_roi(roi, genome):
                                   .drop('chr2', axis = 1, inplace = False))
 
             # Remove loops that don't fit in the predictive window 
-            # To make this valuable, need to add code to only keep loops where both anchors are in the prediction window.
-            # paired_loops_intra = remove_large_loops(paired_loops_intra)
+            paired_loops_intra = remove_large_loops(paired_loops_intra)
 
             # Group similar loops where the anchors are within distance d
             paired_loops_intra_fit_grouped = group_similar_loops(paired_loops_intra)
 
             roi_coords = remove_pairing(paired_loops_intra_fit_grouped)
 
+        else:
+            raise ValueError('roi file header not compatible.')
     
     return BedTool.from_dataframe(roi_coords.astype({'start': int, 'end': int}))
         
@@ -76,9 +77,9 @@ def get_TSS_regions(genome, flanking = 1000):
     gene_annot = gene_annot[['.' not in x for x in gene_annot.gene]]
 
     # Get coordinates for flanking region around TSS
-    gene_annot['Start'] = gene_annot.apply(lambda row: label_TSS(row), axis=1) - flanking
-    gene_annot['Start'].loc[gene_annot['Start'] < 1] = 1
-    gene_annot['End'] = gene_annot['Start'] + flanking
+    gene_annot.loc[:,'Start'] = gene_annot.apply(lambda row: label_TSS(row), axis=1) - flanking
+    gene_annot.loc[gene_annot['Start'] < 1, 'Start'] = 1
+    gene_annot.loc[:,'End'] = gene_annot['Start'] + flanking
     
     return gene_annot[['chr', 'Start', 'End', 'gene']].rename(columns = {'Start':'start', 'End':'end'})
 
@@ -198,7 +199,7 @@ def group_similar_loops(loops):
 
     # Fill in the coordinates of anchors that don't change
     for col_name in ['start1b', 'end1b', 'start2b', 'end2b']:
-        loops.loc[np.isnan(loops[col_name]), col_name] = loops.loc[np.isnan(loops[col_name]), col_name[:-1]]
+        loops.loc[np.isnan(loops[col_name[:-1]]), col_name] = loops.loc[np.isnan(loops[col_name[:-1]]), col_name[:-1]]
 
 
     # Only keep new loop anchor coordinates

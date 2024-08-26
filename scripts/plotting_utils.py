@@ -106,11 +106,7 @@ def get_genes_in_map(CHR, map_start_coord, rel_pos_map, SVTYPE, SVLEN, genome = 
                 right.Start = rel_pos_map + math.ceil(SVLEN/bin_size)
                 right.End = right.End + math.ceil(SVLEN/bin_size)
 
-                genes_in_map = (genes_in_map
-                                .drop(middle_gene)
-                                .append(left)
-                                .append(right)
-                                .reset_index(drop=True))
+                genes_in_map = pd.concat([genes_in_map.drop(middle_gene), left, right], axis = 0).reset_index(drop=True)
             
             # Remove genes that left prediction window
             genes_in_map = genes_in_map[~((genes_in_map.End > target_length_cropped) &
@@ -549,6 +545,128 @@ def plot_maps_genes_tracks_nonames(maps, genes_in_map, lines, disruption_track, 
             plt.axvline(x=line, color='gray', linestyle=linestyle, linewidth = linewidth)
     plt.ylabel('Genes',rotation=90)
     plt.ylim([0,2])
+    plt.xlim([0,448])
+    plt.axis('off')
+
+    plt.show()
+
+
+
+
+
+def plot_maps_roi(maps, genes_in_map, lines, roi_in_map, disruption_track, weight_track, scale = 1, gene_rows = 3):
+    
+    '''
+    Plot the reference and alternate predicted contact frequency maps with lines at the beginning and end of the variant. For duplications, there will be 3 lines marking the two regions that are duplicates. 
+    
+    Plot genes that match the regions in the reference map.
+    
+    Plot disruption score tracks.
+    
+    '''
+
+    gene_track = list(genes_in_map[['Start', 'width']].to_records(index = False))
+    roi_track = list(roi_in_map[['Start', 'width']].to_records(index = False))
+    
+    n = maps[0].shape[0]
+    # create rotation/scaling matrix
+    t = np.array([[1,0.5],[-1,0.5]])
+    # create coordinate matrix and transform it
+    A = np.dot(np.array([(i[1],i[0]) for i in itertools.product(range(n,-1,-1),range(0,n+1,1))]),t)
+    
+    
+    linestyle = 'dashed'
+    linewidth = 1.5*scale
+    plot_width = 2*scale
+    plot_width1D = 1*scale
+    fig, gs = gridspec_inches([plot_width*2], [plot_width, .15, plot_width, .15, plot_width, .15, 
+                                               plot_width1D, .15, plot_width1D/2, .15, plot_width1D, .15, plot_width1D/2])
+
+
+    for i in range(len(maps)):
+        
+        plt.subplot(gs[i*2,0])
+        pcolormesh_45deg(plt, maps[i], lines, linewidth, cmap= 'RdBu_r', vmax=2, vmin=-2)
+        
+    plt.subplot(gs[4,0])
+    pcolormesh_45deg(plt, maps[0] - maps[1], lines, linewidth, cmap= 'PRGn', vmax=1, vmin=-1)
+        
+
+
+    # Disruption track
+    plt.subplot(gs[6,0])
+    plt.plot(list(range(target_length_cropped)), disruption_track, color = 'black', linewidth = linewidth)
+    plt.xlim([0,target_length_cropped])
+    plt.gca().yaxis.tick_right()
+    if lines is not None:
+        for line in lines:
+            plt.axvline(x=line, color='gray', linestyle=linestyle, linewidth = linewidth)
+    plt.xticks([])
+    plt.yticks([])
+
+
+    # ROI regions track
+    ax1 = fig.add_subplot(gs[8,0])
+            
+    ax1.broken_barh(roi_track, (0, 1*scale), facecolors='tab:gray')
+       
+    if lines is not None:
+        for line in lines:
+            plt.axvline(x=line, color='gray', linestyle=linestyle, linewidth = linewidth)
+    plt.ylim([0,1])
+    plt.xlim([0,448])
+    plt.xticks([])
+    plt.yticks([])
+
+
+    # Weight track
+    plt.subplot(gs[10,0])
+    plt.plot(list(range(target_length_cropped)), weight_track, color = 'black', linewidth = linewidth)
+    plt.xlim([0,target_length_cropped])
+    plt.gca().yaxis.tick_right()
+    if lines is not None:
+        for line in lines:
+            plt.axvline(x=line, color='gray', linestyle=linestyle, linewidth = linewidth)
+    plt.xticks([])
+    plt.yticks([])
+    
+
+    # Gene track
+    ax1 = fig.add_subplot(gs[12,0])
+            
+    
+    gene_bar_height = 15*gene_rows/3
+    bar_locations = []
+    
+    for bar_level in range(gene_rows):
+
+        bar_location = (bar_level+1)*(gene_bar_height/gene_rows) - 0.5
+        ax1.broken_barh(gene_track[bar_level:][::gene_rows], 
+                        (bar_location, 0.5*scale), 
+                        facecolors='tab:blue')
+        bar_locations.append(bar_location)
+
+    
+    bar_locations = (bar_locations*math.ceil(len(genes_in_map)/gene_rows))[:len(genes_in_map)]
+
+    for i in range(len(genes_in_map)):
+        
+        bar_location = bar_locations[i]
+        
+        gene = genes_in_map.loc[i,'Gene']
+        location = genes_in_map.loc[i,'Start']
+        
+        ax1.annotate(gene, (location,bar_location), # annotate gene at the start
+                     rotation = 45, 
+                     ha = "right", va = "top", # set horizontal and vertical alignment
+                     annotation_clip = False, # keep annotation if outside of window
+                     fontsize = 12*scale) 
+            
+    if lines is not None:
+        for line in lines:
+            plt.axvline(x=line, color='gray', linestyle=linestyle, linewidth = linewidth)
+    plt.ylabel('Genes',rotation=90)
+    plt.ylim([0,gene_bar_height])
     plt.xlim([0,448])
     plt.axis('off')
 

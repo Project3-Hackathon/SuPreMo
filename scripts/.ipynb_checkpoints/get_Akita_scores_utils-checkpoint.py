@@ -54,7 +54,7 @@ chrom_lengths = None
 centromere_coords = None
 
 roi_coords_BED = None
-roi_weights = None
+roi_scales = None
 
 
 
@@ -263,11 +263,7 @@ def get_roi_in_map(CHR, map_start_coord, rel_pos_map, SVTYPE, SVLEN):
                 right.Start = rel_pos_map + math.ceil(SVLEN/bin_size)
                 right.End = right.End + math.ceil(SVLEN/bin_size)
 
-                roi_in_map = (roi_in_map
-                                .drop(middle_gene)
-                                .append(left)
-                                .append(right)
-                                .reset_index(drop=True))
+                roi_in_map = pd.concat([roi_in_map.drop(middle_gene), left, right], axis = 0).reset_index(drop=True)
             
             # Remove genes that left prediction window
             roi_in_map = roi_in_map[~((roi_in_map.End > target_length_cropped) &
@@ -290,7 +286,7 @@ def get_roi_in_map(CHR, map_start_coord, rel_pos_map, SVTYPE, SVLEN):
 
 
 
-def get_weighted_score(disruption_track, roi_in_map, roi_weight):
+def get_weighted_score(disruption_track, roi_in_map, roi_scale):
 
 
     # Get the bins that correspond regions of interest (roi)
@@ -298,47 +294,31 @@ def get_weighted_score(disruption_track, roi_in_map, roi_weight):
     roi_bins = []
     for i in range(len(roi_in_map)):
         
-        bins_i = list(range(roi_in_map.iloc[i].Start, roi_in_map.iloc[i].End))
+        bins_i = list(range(roi_in_map.iloc[i].Start, roi_in_map.iloc[i].End + 1))
         roi_bins.append(bins_i)
     
-    roi_bins = [item for group in roi_bins for item in group]
+    roi_bins = np.unique([item for group in roi_bins for item in group if item < 448])
     
-    
-    # Get scaling factor and background weight 
-    if len(roi_bins) == 0:
-        
-        background_weight = 1
-
-    elif roi_weight < 1 and roi_weight > 0:
-        
-        background_weight = 1
-        
-        n = len(roi_bins)
-        w = roi_weight
-        l = len(disruption_track)
-
-        scale = ((n*w)-(l*w))/((n*w)-n)
-
-    elif roi_weight == 1:
-        
-        background_weight = 0
-        scale = 1
-        
-    else:
-        
-        raise ValueError('roi_weight provided not compatible.')
-
+    background_weight = 1
 
     # Get weight track
     
     weight_track = np.array([background_weight]*len(disruption_track))
+
     for i in roi_bins:
-        weight_track[i] = scale
+        weight_track[i] = roi_scale
     # Add nans to weight track
     weight_track[np.isnan(disruption_track)] = 0
 
+    if len(roi_in_map) == 0:
+        roi_id_values = ['']
+    else:
+        roi_id_values = roi_in_map.roi_id.values
 
-    return np.average(disruption_track, weights=weight_track), roi_in_map.roi_id.values
+    # Mask nan values in disruption track
+    disruption_track_masked = np.ma.MaskedArray(disruption_track, mask=np.isnan(disruption_track))
+
+    return np.ma.average(disruption_track_masked, weights=weight_track), roi_id_values
 
 
 
@@ -684,21 +664,23 @@ def get_scores(CHR, POS, SVTYPE, SVLEN, sequences, scores, shift, revcomp,
 
                 if use_roi:
 
-                    if 0 in roi_weights:
-                        roi_weights.remove(0)
+                    if 0 in roi_scales:
+                        roi_scales.remove(0)
                         
                     if score == 'corr':
                         scores_results[f'{score}_unweighted_{Akita_cell_types[i]}'] = np.average(disruption_track[~np.isnan(disruption_track)])
                     
-                    for roi_weight in roi_weights:
+                    for roi_scale in roi_scales:
+
                         map_start_coord = POS - var_rel_pos[0] + 32*bin_size
                         roi_in_map = get_roi_in_map(CHR, map_start_coord, rel_pos_map, SVTYPE, SVLEN)
-                        print(roi_in_map)
-                        scores_results[f'{score}_{roi_weight}-weighted_{Akita_cell_types[i]}'] = get_weighted_score(disruption_track, 
+                        
+                        scores_results[f'{score}_{roi_scale}-weighted_{Akita_cell_types[i]}'] = get_weighted_score(disruption_track, 
                                                                                                                     roi_in_map, 
-                                                                                                                    roi_weight)[0]
-                        if roi_weight == roi_weights[0] and i == 0:
-                            roi_ids = get_weighted_score(disruption_track, roi_in_map, roi_weight)[1]
+                                                                                                                    roi_scale)[0]
+                        if roi_scale == roi_scales[0] and i == 0:
+                            roi_ids = get_weighted_score(disruption_track, roi_in_map, roi_scale)[1]
+                            
                             scores_results['roi_id'] = ', '.join(roi_ids)
 
                         
